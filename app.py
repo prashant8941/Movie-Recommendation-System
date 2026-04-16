@@ -4,24 +4,31 @@ import bs4 as bs
 import numpy as np
 import pandas as pd
 import urllib.request
+
 from flask import Flask, render_template, request
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.feature_extraction.text import CountVectorizer
 
 app = Flask(__name__)
 
-# ✅ Base directory
+# =========================
+# BASE DIRECTORY
+# =========================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# ✅ Load models safely
+# =========================
+# LOAD MODELS SAFELY
+# =========================
 try:
-    clf = pickle.load(open(os.path.join(BASE_DIR, "Artifacts", "nlp_model.pkl"), 'rb'))
-    vectorizer = pickle.load(open(os.path.join(BASE_DIR, "Artifacts", "tranform.pkl"), 'rb'))
+    clf = pickle.load(open(os.path.join(BASE_DIR, "Artifacts", "nlp_model.pkl"), "rb"))
+    vectorizer = pickle.load(open(os.path.join(BASE_DIR, "Artifacts", "tranform.pkl"), "rb"))
 except Exception as e:
-    print("Error loading models:", e)
+    print("Model loading error:", e)
     clf, vectorizer = None, None
 
-# ✅ Load data once (IMPORTANT for performance)
+# =========================
+# GLOBAL DATA
+# =========================
 data = None
 similarity = None
 
@@ -32,126 +39,139 @@ def create_similarity():
         data = pd.read_csv(data_path)
 
         cv = CountVectorizer()
-        count_matrix = cv.fit_transform(data['comb'])
+        count_matrix = cv.fit_transform(data["comb"])
+
         similarity = cosine_similarity(count_matrix)
+
+        print("✅ Similarity matrix created")
 
     except Exception as e:
         print("Similarity error:", e)
 
-# Load at startup
+# load once at startup
 create_similarity()
 
-# ✅ Recommendation logic
-def rcmd(m):
-    m = m.lower()
+# =========================
+# RECOMMENDATION ENGINE
+# =========================
+def rcmd(movie):
+    movie = movie.lower()
 
     if data is None or similarity is None:
-        return "Data not loaded properly"
+        return []
 
-    if m not in data['movie_title'].unique():
-        return "Movie not found"
+    if movie not in data["movie_title"].values:
+        return []
 
     try:
-        i = data.loc[data['movie_title'] == m].index[0]
-        lst = list(enumerate(similarity[i]))
-        lst = sorted(lst, key=lambda x: x[1], reverse=True)[1:11]
+        idx = data.loc[data["movie_title"] == movie].index[0]
 
-        return [data['movie_title'][x[0]] for x in lst]
+        scores = list(enumerate(similarity[idx]))
+        scores = sorted(scores, key=lambda x: x[1], reverse=True)[1:11]
+
+        return [data["movie_title"][i[0]] for i in scores]
+
     except Exception as e:
-        print("Recommendation error:", e)
-        return "Error generating recommendations"
+        print("RCMD error:", e)
+        return []
 
-# ✅ Utils
-def convert_to_list(my_list):
+# =========================
+# UTILS
+# =========================
+def convert_to_list(text):
     try:
-        my_list = my_list.split('","')
-        my_list[0] = my_list[0].replace('["','')
-        my_list[-1] = my_list[-1].replace('"]','')
-        return my_list
+        if not text:
+            return []
+        return text.split('","')
     except:
         return []
 
 def get_suggestions():
     try:
-        return list(data['movie_title'].str.capitalize())
+        return list(data["movie_title"].str.capitalize())
     except:
         return []
 
-# ✅ Routes
+# =========================
+# ROUTES
+# =========================
 @app.route("/")
 @app.route("/home")
 def home():
-    return render_template('home.html', suggestions=get_suggestions())
+    return render_template("home.html", suggestions=get_suggestions())
+
 
 @app.route("/similarity", methods=["POST"])
 def similarity_route():
-    movie = request.form.get('name')
+    movie = request.form.get("name")
 
     if not movie:
         return "No movie provided"
 
-    rc = rcmd(movie)
+    result = rcmd(movie)
 
-    if isinstance(rc, str):
-        return rc
+    if not result:
+        return "Movie not found or data not loaded"
 
-    return "---".join(rc)
+    return "---".join(result)
+
 
 @app.route("/recommend", methods=["POST"])
 def recommend():
     try:
-        title = request.form.get('title')
-        imdb_id = request.form.get('imdb_id')
-        poster = request.form.get('poster')
-        overview = request.form.get('overview')
-        vote_average = request.form.get('rating')
-        vote_count = request.form.get('vote_count')
-        release_date = request.form.get('release_date')
-        runtime = request.form.get('runtime')
-        status = request.form.get('status')
-        genres = request.form.get('genres')
+        title = request.form.get("title")
+        imdb_id = request.form.get("imdb_id")
+        poster = request.form.get("poster")
+        overview = request.form.get("overview")
+        vote_average = request.form.get("rating")
+        vote_count = request.form.get("vote_count")
+        release_date = request.form.get("release_date")
+        runtime = request.form.get("runtime")
+        status = request.form.get("status")
+        genres = request.form.get("genres")
 
-        rec_movies = convert_to_list(request.form.get('rec_movies', ''))
-        rec_posters = convert_to_list(request.form.get('rec_posters', ''))
+        rec_movies = convert_to_list(request.form.get("rec_movies"))
+        rec_posters = convert_to_list(request.form.get("rec_posters"))
 
-        movie_cards = {
-            rec_posters[i]: rec_movies[i]
-            for i in range(min(len(rec_posters), len(rec_movies)))
-        }
+        movie_cards = dict(zip(rec_posters, rec_movies))
 
-        # ✅ Scraping reviews (safe)
+        # =========================
+        # IMDB SCRAPING (SAFE MODE)
+        # =========================
         reviews_list = []
         reviews_status = []
 
         try:
-            sauce = urllib.request.urlopen(
-                f'https://www.imdb.com/title/{imdb_id}/reviews'
-            ).read()
+            url = f"https://www.imdb.com/title/{imdb_id}/reviews"
+            req = urllib.request.Request(
+                url,
+                headers={"User-Agent": "Mozilla/5.0"}
+            )
 
-            soup = bs.BeautifulSoup(sauce, 'lxml')
-            soup_result = soup.find_all("div", {"class": "text show-more__control"})
+            sauce = urllib.request.urlopen(req, timeout=5).read()
 
-            for review in soup_result[:10]:  # limit for speed
-                if review.string:
-                    reviews_list.append(review.string)
+            soup = bs.BeautifulSoup(sauce, "lxml")
+            reviews = soup.find_all("div", class_="text show-more__control")
 
-                    if vectorizer and clf:
-                        movie_vector = vectorizer.transform([review.string])
-                        pred = clf.predict(movie_vector)
-                        reviews_status.append('Good' if pred else 'Bad')
-                    else:
-                        reviews_status.append('Unknown')
+            for r in reviews[:8]:
+                text = r.get_text(strip=True)
+
+                reviews_list.append(text)
+
+                if clf and vectorizer:
+                    vec = vectorizer.transform([text])
+                    pred = clf.predict(vec)
+                    reviews_status.append("Good" if pred else "Bad")
+                else:
+                    reviews_status.append("Unknown")
 
         except Exception as e:
-            print("Review scraping error:", e)
+            print("IMDB scraping failed:", e)
 
-        movie_reviews = {
-            reviews_list[i]: reviews_status[i]
-            for i in range(len(reviews_list))
-        }
+        movie_reviews = dict(zip(reviews_list, reviews_status))
 
         return render_template(
-            'recommend.html',
+            "recommend.html",
             title=title,
             poster=poster,
             overview=overview,
@@ -166,10 +186,12 @@ def recommend():
         )
 
     except Exception as e:
-        print("Recommend route error:", e)
-        return "Error loading recommendation page"
+        print("Recommend error:", e)
+        return "Something went wrong"
 
-# ✅ For Render
-if __name__ == '__main__':
+# =========================
+# RUN APP (RENDER SAFE)
+# =========================
+if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
