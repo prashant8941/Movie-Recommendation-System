@@ -1,3 +1,4 @@
+import os
 import json
 import pickle
 import requests
@@ -9,45 +10,51 @@ from flask import Flask, render_template, request
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.feature_extraction.text import CountVectorizer
 
-# loading the dataset and the trained model
-try:
-    clf = pickle.load(open("./Artifacts\nlp_model.pkl", 'rb'))
-    vectorizer = pickle.load(open("./Artifacts\tranform.pkl",'rb'))
-except:
-    print("Error in loading Artifacts")
+app = Flask(__name__)
 
-# creating a similarity matrix using count vectorizer and cosine similarity
+# ✅ Correct paths (relative paths)
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+try:
+    clf = pickle.load(open(os.path.join(BASE_DIR, "Artifacts", "nlp_model.pkl"), 'rb'))
+    vectorizer = pickle.load(open(os.path.join(BASE_DIR, "Artifacts", "tranform.pkl"), 'rb'))
+except Exception as e:
+    print("Error loading models:", e)
+
+# ✅ Create similarity
 def create_similarity():
     try:
-        data = pd.read_csv(r"C:\Users\KALYAN\Desktop\Projects\Movie Recommendation System\Artifacts\main_data.csv")
-        cv = CountVectorizer()
-        count_matrix = cv.fit_transform(data['comb']) 
-        similarity = cosine_similarity(count_matrix)
-        return data,similarity
-    except Exception as e:
-        print(e)
+        data_path = os.path.join(BASE_DIR, "Artifacts", "main_data.csv")
+        data = pd.read_csv(data_path)
 
+        cv = CountVectorizer()
+        count_matrix = cv.fit_transform(data['comb'])
+        similarity = cosine_similarity(count_matrix)
+
+        return data, similarity
+    except Exception as e:
+        print("Similarity error:", e)
+
+# ✅ Recommendation logic
 def rcmd(m):
     m = m.lower()
+    global data, similarity
+
     try:
         data.head()
-        similarity.shape 
     except:
         data, similarity = create_similarity()
+
     if m not in data['movie_title'].unique():
-        return('Sorry! The movie you requested is not in our database. Please check the spelling or try with some other movies')
-    else:
-        i = data.loc[data['movie_title']==m].index[0]
-        lst = list(enumerate(similarity[i]))
-        lst = sorted(lst, key = lambda x:x[1] ,reverse=True)
-        lst = lst[1:11] # excluding first item since it is the requested movie itself
-        l = []
-        for i in range(len(lst)):
-            a = lst[i][0]
-            l.append(data['movie_title'][a])
-        return l
-    
-# converting list of string to list (eg. "["abc","def"]" to ["abc","def"])
+        return "Movie not found"
+
+    i = data.loc[data['movie_title'] == m].index[0]
+    lst = list(enumerate(similarity[i]))
+    lst = sorted(lst, key=lambda x: x[1], reverse=True)[1:11]
+
+    return [data['movie_title'][x[0]] for x in lst]
+
+# ✅ Utils
 def convert_to_list(my_list):
     my_list = my_list.split('","')
     my_list[0] = my_list[0].replace('["','')
@@ -55,102 +62,89 @@ def convert_to_list(my_list):
     return my_list
 
 def get_suggestions():
-    data = pd.read_csv('main_data.csv')
+    data_path = os.path.join(BASE_DIR, "Artifacts", "main_data.csv")
+    data = pd.read_csv(data_path)
     return list(data['movie_title'].str.capitalize())
 
-app = Flask(__name__)
-
+# ✅ Routes
 @app.route("/")
 @app.route("/home")
 def home():
-    suggestions = get_suggestions()
-    return render_template('home.html',suggestions=suggestions)
+    return render_template('home.html', suggestions=get_suggestions())
 
-@app.route("/similarity",methods=["POST"])
-def similarity():
+@app.route("/similarity", methods=["POST"])
+def similarity_route():
     movie = request.form['name']
     rc = rcmd(movie)
-    if type(rc)==type('string'):
-        return rc
-    else:
-        m_str="---".join(rc)
-        return m_str
 
-@app.route("/recommend",methods=["POST"])
+    if isinstance(rc, str):
+        return rc
+    return "---".join(rc)
+
+@app.route("/recommend", methods=["POST"])
 def recommend():
-    # getting data from AJAX request
     title = request.form['title']
-    cast_ids = request.form['cast_ids']
-    cast_names = request.form['cast_names']
-    cast_chars = request.form['cast_chars']
-    cast_bdays = request.form['cast_bdays']
-    cast_bios = request.form['cast_bios']
-    cast_places = request.form['cast_places']
-    cast_profiles = request.form['cast_profiles']
     imdb_id = request.form['imdb_id']
     poster = request.form['poster']
-    genres = request.form['genres']
     overview = request.form['overview']
     vote_average = request.form['rating']
     vote_count = request.form['vote_count']
     release_date = request.form['release_date']
     runtime = request.form['runtime']
     status = request.form['status']
-    rec_movies = request.form['rec_movies']
-    rec_posters = request.form['rec_posters']
+    genres = request.form['genres']
 
-    # get movie suggestions for auto complete
-    suggestions = get_suggestions()
+    rec_movies = convert_to_list(request.form['rec_movies'])
+    rec_posters = convert_to_list(request.form['rec_posters'])
 
-    # call the convert_to_list function for every string that needs to be converted to list
-    rec_movies = convert_to_list(rec_movies)
-    rec_posters = convert_to_list(rec_posters)
-    cast_names = convert_to_list(cast_names)
-    cast_chars = convert_to_list(cast_chars)
-    cast_profiles = convert_to_list(cast_profiles)
-    cast_bdays = convert_to_list(cast_bdays)
-    cast_bios = convert_to_list(cast_bios)
-    cast_places = convert_to_list(cast_places)
-    
-    # convert string to list (eg. "[1,2,3]" to [1,2,3])
-    cast_ids = cast_ids.split(',')
-    cast_ids[0] = cast_ids[0].replace("[","")
-    cast_ids[-1] = cast_ids[-1].replace("]","")
-    
-    # rendering the string to python string
-    for i in range(len(cast_bios)):
-        cast_bios[i] = cast_bios[i].replace(r'\n', '\n').replace(r'\"','\"')
-    
-    # combining multiple lists as a dictionary which can be passed to the html file so that it can be processed easily and the order of information will be preserved
+    # Movie cards
     movie_cards = {rec_posters[i]: rec_movies[i] for i in range(len(rec_posters))}
-    
-    casts = {cast_names[i]:[cast_ids[i], cast_chars[i], cast_profiles[i]] for i in range(len(cast_profiles))}
 
-    cast_details = {cast_names[i]:[cast_ids[i], cast_profiles[i], cast_bdays[i], cast_places[i], cast_bios[i]] for i in range(len(cast_places))}
+    # ✅ Scraping reviews
+    reviews_list = []
+    reviews_status = []
 
-    # web scraping to get user reviews from IMDB site
-    sauce = urllib.request.urlopen('https://www.imdb.com/title/{}/reviews?ref_=tt_ov_rt'.format(imdb_id)).read()
-    soup = bs.BeautifulSoup(sauce,'lxml')
-    soup_result = soup.find_all("div",{"class":"text show-more__control"})
+    try:
+        sauce = urllib.request.urlopen(
+            f'https://www.imdb.com/title/{imdb_id}/reviews?ref_=tt_ov_rt'
+        ).read()
 
-    reviews_list = [] # list of reviews
-    reviews_status = [] # list of comments (good or bad)
-    for reviews in soup_result:
-        if reviews.string:
-            reviews_list.append(reviews.string)
-            # passing the review to our model
-            movie_review_list = np.array([reviews.string])
-            movie_vector = vectorizer.transform(movie_review_list)
-            pred = clf.predict(movie_vector)
-            reviews_status.append('Good' if pred else 'Bad')
+        soup = bs.BeautifulSoup(sauce, 'lxml')
+        soup_result = soup.find_all("div", {"class": "text show-more__control"})
 
-    # combining reviews and comments into a dictionary
-    movie_reviews = {reviews_list[i]: reviews_status[i] for i in range(len(reviews_list))}     
+        for review in soup_result:
+            if review.string:
+                reviews_list.append(review.string)
 
-    # passing all the data to the html file
-    return render_template('recommend.html',title=title,poster=poster,overview=overview,vote_average=vote_average,
-        vote_count=vote_count,release_date=release_date,runtime=runtime,status=status,genres=genres,
-        movie_cards=movie_cards,reviews=movie_reviews,casts=casts,cast_details=cast_details)
+                movie_vector = vectorizer.transform([review.string])
+                pred = clf.predict(movie_vector)
 
+                reviews_status.append('Good' if pred else 'Bad')
+
+    except Exception as e:
+        print("Review scraping error:", e)
+
+    movie_reviews = {
+        reviews_list[i]: reviews_status[i]
+        for i in range(len(reviews_list))
+    }
+
+    return render_template(
+        'recommend.html',
+        title=title,
+        poster=poster,
+        overview=overview,
+        vote_average=vote_average,
+        vote_count=vote_count,
+        release_date=release_date,
+        runtime=runtime,
+        status=status,
+        genres=genres,
+        movie_cards=movie_cards,
+        reviews=movie_reviews
+    )
+
+# ✅ IMPORTANT (for Render)
 if __name__ == '__main__':
-    app.run(debug=True,host="0.0.0.0",port=5000)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
