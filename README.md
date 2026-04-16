@@ -119,4 +119,5 @@ Distributed under the GNU General Public License v3.0. See `LICENSE.txt` for mor
 # Acknowledgements
 
 This project was inspired by the Kaggle dataset on Spam Email Detection and the corresponding competition. We also acknowledge the open-source Python libraries used in this project and their contributors.
+This is my movie recommendation project.
 
