@@ -19,9 +19,9 @@ app = Flask(__name__)
 # =========================
 # CONFIG & ENV VARIABLES
 # =========================
-# Using your generated key as fallback; best to set this in Render Dashboard
+# Uses environment variable from Render, or falls back to your generated key
 app.config['SECRET_KEY'] = os.environ.get("SECRET_KEY", "d63082faf25460e9c63a799e3596aada47fa4e76c2811fe4")
-TMDB_API_KEY = os.environ.get("TMDB_API_KEY", "your_default_key_here")
+TMDB_API_KEY = os.environ.get("TMDB_API_KEY", "")
 DEBUG_MODE = os.environ.get("FLASK_DEBUG", "False").lower() == "true"
 
 # =========================
@@ -32,12 +32,21 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 # =========================
 # LOAD SENTIMENT MODELS
 # =========================
+clf = None
+vectorizer = None
+
 try:
-    clf = pickle.load(open(os.path.join(BASE_DIR, "Artifacts", "nlp_model.pkl"), "rb"))
-    vectorizer = pickle.load(open(os.path.join(BASE_DIR, "Artifacts", "tranform.pkl"), "rb"))
+    clf_path = os.path.join(BASE_DIR, "Artifacts", "nlp_model.pkl")
+    vec_path = os.path.join(BASE_DIR, "Artifacts", "tranform.pkl")
+    
+    if os.path.exists(clf_path) and os.path.exists(vec_path):
+        clf = pickle.load(open(clf_path, "rb"))
+        vectorizer = pickle.load(open(vec_path, "rb"))
+        print("✅ Sentiment models loaded successfully")
+    else:
+        print("⚠️ Sentiment model files not found in Artifacts/")
 except Exception as e:
-    print("Model loading error:", e)
-    clf, vectorizer = None, None
+    print("❌ Model loading error:", e)
 
 # =========================
 # GLOBAL DATA (MEMORY SAFE)
@@ -49,49 +58,72 @@ def load_data():
     global data, count_matrix
     try:
         data_path = os.path.join(BASE_DIR, "Artifacts", "main_data.csv")
+        if not os.path.exists(data_path):
+            print(f"❌ Error: {data_path} not found!")
+            return
+
         data = pd.read_csv(data_path)
         
-        # MEMORY OPTIMIZATION:
-        # We only store the CountVectorizer sparse matrix.
-        # We DO NOT calculate the N x N similarity matrix at startup.
-        cv = CountVectorizer()
-        count_matrix = cv.fit_transform(data["comb"])
-        print("✅ Data and Count Matrix loaded successfully")
+        # Ensure movie_title column is clean (lowercase and no spaces)
+        if 'movie_title' in data.columns:
+            data['movie_title'] = data['movie_title'].str.lower().str.strip()
+        elif 'title' in data.columns:
+            data['movie_title'] = data['title'].str.lower().str.strip()
+        
+        # Fill missing values in 'comb' to prevent matrix errors
+        if 'comb' in data.columns:
+            data['comb'] = data['comb'].fillna('')
+            cv = CountVectorizer()
+            count_matrix = cv.fit_transform(data["comb"])
+            print(f"✅ Data ({len(data)} movies) and sparse matrix loaded")
+        else:
+            print("❌ Error: 'comb' column missing. Run your fix_csv script.")
+            
     except Exception as e:
-        print("Loading error:", e)
+        print("❌ Loading error:", e)
 
-# Load data into RAM once at startup
+# Initial load at startup
 load_data()
 
 # =========================
 # RECOMMENDATION ENGINE
 # =========================
 def rcmd(movie):
-    movie = movie.lower()
+    # DEFENSIVE: Strip spaces and lowercase the search term
+    movie = str(movie).lower().strip()
 
     if data is None or count_matrix is None:
         return []
 
-    if movie not in data["movie_title"].values:
+    # Get the list of titles from the CSV
+    titles = data["movie_title"].values
+
+    if movie not in titles:
+        print(f"DEBUG: '{movie}' not found in dataset")
         return []
 
     try:
         # Find index of the movie
         idx = data.loc[data["movie_title"] == movie].index[0]
 
-        # LIVE CALCULATION (MEMORY SAFE):
-        # Calculate similarity ONLY for the searched movie against all others.
-        # This creates a 1 x N vector (very light) instead of an N x N matrix (very heavy).
+        # LIVE CALCULATION: Calculate similarity ONLY for this movie (Memory Safe)
         sig_score = cosine_similarity(count_matrix[idx], count_matrix)
 
-        # Get scores and sort them
+        # Get scores and sort them (Skip the first one as it's the same movie)
         scores = list(enumerate(sig_score[0]))
-        scores = sorted(scores, key=lambda x: x[1], reverse=True)[1:11]
+        scores = sorted(scores, key=lambda x: x[1], reverse=True)
+        
+        recommendations = []
+        for i, score in scores:
+            if i != idx: # Don't recommend the searched movie itself
+                recommendations.append(data["title"].iloc[i])
+            if len(recommendations) == 10: # Stop at 10
+                break
 
-        return [data["movie_title"][i[0]] for i in scores]
+        return recommendations
 
     except Exception as e:
-        print("Recommendation engine error:", e)
+        print("❌ Recommendation error:", e)
         return []
 
 # =========================
@@ -100,14 +132,16 @@ def rcmd(movie):
 def convert_to_list(text):
     try:
         if not text: return []
-        return text.split('","')
+        if '","' in text:
+            return text.strip('[]"').split('","')
+        return text.strip('[]').replace("'", "").split(', ')
     except:
         return []
 
 def get_suggestions():
     try:
-        # Return capitalized titles for the autocomplete dropdown
-        return list(data["movie_title"].str.capitalize())
+        # Returns the display titles for the autocomplete dropdown
+        return list(data["title"].str.title())
     except:
         return []
 
@@ -130,12 +164,13 @@ def similarity_route():
     if not result:
         return "Movie not found or data not loaded"
     
+    # Return joined string as expected by the frontend JavaScript
     return "---".join(result)
 
 @app.route("/recommend", methods=["POST"])
 def recommend():
     try:
-        # Get data from AJAX request
+        # Extract movie details from AJAX request
         title = request.form.get("title")
         imdb_id = request.form.get("imdb_id")
         poster = request.form.get("poster")
@@ -152,54 +187,39 @@ def recommend():
 
         movie_cards = dict(zip(rec_posters, rec_movies))
 
-        # =========================
-        # IMDB SCRAPING & SENTIMENT
-        # =========================
-        reviews_list, reviews_status = [], []
-        try:
-            url = f"https://www.imdb.com/title/{imdb_id}/reviews"
-            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-            sauce = urllib.request.urlopen(req, timeout=5).read()
-            soup = bs.BeautifulSoup(sauce, "lxml")
-            reviews = soup.find_all("div", class_="text show-more__control")
+        # IMDB SCRAPING & SENTIMENT ANALYSIS
+        movie_reviews = {}
+        if imdb_id:
+            try:
+                url = f"https://www.imdb.com/title/{imdb_id}/reviews"
+                req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+                sauce = urllib.request.urlopen(req, timeout=5).read()
+                soup = bs.BeautifulSoup(sauce, "lxml")
+                reviews = soup.find_all("div", class_="text show-more__control")
 
-            for r in reviews[:8]:
-                text = r.get_text(strip=True)
-                reviews_list.append(text)
-                
-                # Perform sentiment analysis if models are loaded
-                if clf and vectorizer:
-                    vec = vectorizer.transform([text])
-                    pred = clf.predict(vec)
-                    reviews_status.append("Good" if pred else "Bad")
-                else:
-                    reviews_status.append("Unknown")
-        except Exception as e:
-            print("IMDB scraping failed:", e)
-
-        movie_reviews = dict(zip(reviews_list, reviews_status))
+                for r in reviews[:8]:
+                    text = r.get_text(strip=True)
+                    # Use models to predict sentiment
+                    if clf and vectorizer:
+                        vec = vectorizer.transform([text])
+                        pred = clf.predict(vec)
+                        status_label = "Good" if pred[0] == 1 else "Bad"
+                    else:
+                        status_label = "Unknown"
+                    movie_reviews[text] = status_label
+            except Exception as e:
+                print("⚠️ IMDB scraping failed:", e)
 
         return render_template(
-            "recommend.html", 
-            title=title, 
-            poster=poster, 
-            overview=overview,
-            vote_average=vote_average, 
-            vote_count=vote_count, 
-            release_date=release_date,
-            runtime=runtime, 
-            status=status, 
-            genres=genres, 
-            movie_cards=movie_cards, 
+            "recommend.html", title=title, poster=poster, overview=overview,
+            vote_average=vote_average, vote_count=vote_count, release_date=release_date,
+            runtime=runtime, status=status, genres=genres, movie_cards=movie_cards, 
             reviews=movie_reviews
         )
     except Exception as e:
-        print("Recommend route error:", e)
+        print("❌ Recommend route error:", e)
         return "Something went wrong"
 
-# =========================
-# ENTRY POINT
-# =========================
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=DEBUG_MODE)
