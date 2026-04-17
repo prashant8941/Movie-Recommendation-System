@@ -4,12 +4,27 @@ import bs4 as bs
 import numpy as np
 import pandas as pd
 import urllib.request
-
 from flask import Flask, render_template, request
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.feature_extraction.text import CountVectorizer
 
+# NEW: Import for environment variables
+from dotenv import load_dotenv
+
+# Load variables from .env file (for local testing)
+load_dotenv()
+
 app = Flask(__name__)
+
+# =========================
+# CONFIG & ENV VARIABLES
+# =========================
+# Flask Secret Key for security (Sessions, CSRF, etc.)
+app.config['SECRET_KEY'] = os.environ.get("SECRET_KEY", "optional-local-fallback-key")
+
+# API Keys and Debug settings
+TMDB_API_KEY = os.environ.get("TMDB_API_KEY", "your_default_key_here")
+DEBUG_MODE = os.environ.get("FLASK_DEBUG", "False").lower() == "true"
 
 # =========================
 # BASE DIRECTORY
@@ -48,7 +63,7 @@ def create_similarity():
     except Exception as e:
         print("Similarity error:", e)
 
-# load once at startup
+# Load once at startup
 create_similarity()
 
 # =========================
@@ -155,7 +170,6 @@ def recommend():
 
             for r in reviews[:8]:
                 text = r.get_text(strip=True)
-
                 reviews_list.append(text)
 
                 if clf and vectorizer:
@@ -194,4 +208,5 @@ def recommend():
 # =========================
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    # Use DEBUG_MODE from environment variable
+    app.run(host="0.0.0.0", port=port, debug=DEBUG_MODE)
