@@ -40,10 +40,14 @@ def load_data():
     try:
         data_path = os.path.join(BASE_DIR, "Artifacts", "main_data.csv")
         data = pd.read_csv(data_path)
-        data['movie_title'] = data['movie_title'].str.lower().str.strip()
+        
+        # Ensure 'movie_title' column exists and is clean
+        if 'movie_title' in data.columns:
+            data['movie_title'] = data['movie_title'].str.lower().str.strip()
+        
         cv = CountVectorizer()
         count_matrix = cv.fit_transform(data["comb"].fillna(''))
-        print("✅ Data and Matrix loaded")
+        print("✅ Data and Matrix loaded successfully")
     except Exception as e:
         print("❌ Loading error:", e)
 
@@ -54,15 +58,24 @@ load_data()
 # =========================
 def rcmd(movie):
     movie = str(movie).lower().strip()
-    if data is None or count_matrix is None or movie not in data["movie_title"].values:
+    # Fixed: Check for 'movie_title' column instead of 'title'
+    if data is None or count_matrix is None or 'movie_title' not in data.columns:
         return []
+    
+    if movie not in data["movie_title"].values:
+        print(f"DEBUG: {movie} not found in database")
+        return []
+
     try:
         idx = data.loc[data["movie_title"] == movie].index[0]
         sig_score = cosine_similarity(count_matrix[idx], count_matrix)
         scores = list(enumerate(sig_score[0]))
         scores = sorted(scores, key=lambda x: x[1], reverse=True)
-        return [data["title"].iloc[i] for i, s in scores if i != idx][:10]
+        
+        # Fixed: Use 'movie_title' and convert to Title Case for display
+        return [data["movie_title"].iloc[i].title() for i, s in scores if i != idx][:10]
     except Exception as e:
+        print(f"❌ RCMD error: {e}")
         return []
 
 # =========================
@@ -71,7 +84,11 @@ def rcmd(movie):
 @app.route("/")
 @app.route("/home")
 def home():
-    suggestions = list(data["title"].str.title()) if data is not None else []
+    # Fixed: Use 'movie_title' column for the autocomplete suggestions
+    if data is not None and 'movie_title' in data.columns:
+        suggestions = list(data["movie_title"].str.title())
+    else:
+        suggestions = []
     return render_template("home.html", suggestions=suggestions)
 
 @app.route("/similarity", methods=["POST"])
@@ -96,8 +113,11 @@ def tmdb_proxy():
     elif endpoint == "person":
         url = f"https://api.themoviedb.org/3/person/{person_id}?api_key={TMDB_API_KEY}"
     
-    res = requests.get(url)
-    return jsonify(res.json())
+    try:
+        res = requests.get(url, timeout=5)
+        return jsonify(res.json())
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 def convert_to_list(text):
     try:
@@ -143,7 +163,9 @@ def recommend():
         return render_template("recommend.html", title=title, poster=poster, overview=overview,
             vote_average=vote_average, vote_count=vote_count, release_date=release_date,
             runtime=runtime, status=status, genres=genres, movie_cards=movie_cards, reviews=movie_reviews)
-    except: return "Something went wrong"
+    except Exception as e: 
+        print(f"Error in recommend route: {e}")
+        return "Something went wrong", 500
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
